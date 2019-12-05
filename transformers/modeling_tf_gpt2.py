@@ -196,13 +196,15 @@ class TFBlock(tf.keras.layers.Layer):
 
 
 class TFGPT2MainLayer(tf.keras.layers.Layer):
-    def __init__(self, config, *inputs, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, **kwargs):
         super(TFGPT2MainLayer, self).__init__(config, *inputs, **kwargs)
         self.output_hidden_states = config.output_hidden_states
         self.output_attentions = config.output_attentions
         self.num_hidden_layers = config.n_layer
         self.vocab_size = config.vocab_size
         self.n_embd = config.n_embd
+
+        self.use_side_info = use_side_info
 
         self.wte = TFSharedEmbeddings(config.vocab_size,
                                       config.hidden_size,
@@ -219,6 +221,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                           name='h_._{}'.format(i)) for i in range(config.n_layer)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_f')
 
+
     def _resize_token_embeddings(self, new_num_tokens):
         raise NotImplementedError
 
@@ -229,6 +232,12 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         raise NotImplementedError
 
     def call(self, inputs, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, training=False):
+
+        side_info = None
+        if self.use_side_info and isinstance(inputs, dict):
+            side_info = inputs['side_info']
+            inputs = inputs['orig_inputs']
+
         if isinstance(inputs, (tuple, list)):
             input_ids = inputs[0]
             past = inputs[1] if len(inputs) > 1 else past
@@ -298,6 +307,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         else:
             token_type_embeds = 0
         hidden_states = inputs_embeds + position_embeds + token_type_embeds
+
         hidden_states = self.drop(hidden_states, training=training)
 
         output_shape = input_shape + [shape_list(hidden_states)[-1]]
@@ -309,10 +319,13 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
+            if i == len(self.h) - 4 and side_info is not None:
+                hidden_states += side_info[:, tf.newaxis, :]
             outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
-            hidden_states, present = outputs[:2]
+            hidden_states, present = outputs[:3]
             presents = presents + (present,)
+
 
             if self.output_attentions:
                 all_attentions.append(outputs[2])
@@ -442,6 +455,7 @@ class TFGPT2Model(TFGPT2PreTrainedModel):
 
     """
     def __init__(self, config, *inputs, **kwargs):
+        print(kwargs)
         super(TFGPT2Model, self).__init__(config, *inputs, **kwargs)
         self.transformer = TFGPT2MainLayer(config, name='transformer')
 
@@ -482,9 +496,9 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel):
         logits = outputs[0]
 
     """
-    def __init__(self, config, *inputs, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, **kwargs):
         super(TFGPT2LMHeadModel, self).__init__(config, *inputs, **kwargs)
-        self.transformer = TFGPT2MainLayer(config, name='transformer')
+        self.transformer = TFGPT2MainLayer(config, use_side_info=use_side_info, name='transformer')
 
     def call(self, inputs, **kwargs):
         transformer_outputs = self.transformer(inputs, **kwargs)
