@@ -196,7 +196,7 @@ class TFBlock(tf.keras.layers.Layer):
 
 
 class TFGPT2MainLayer(tf.keras.layers.Layer):
-    def __init__(self, config, *inputs, use_side_info=False, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', **kwargs):
         super(TFGPT2MainLayer, self).__init__(config, *inputs, **kwargs)
         self.output_hidden_states = config.output_hidden_states
         self.output_attentions = config.output_attentions
@@ -205,6 +205,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         self.n_embd = config.n_embd
 
         self.use_side_info = use_side_info
+        self.side_info_method = side_info_method
 
         self.wte = TFSharedEmbeddings(config.vocab_size,
                                       config.hidden_size,
@@ -331,11 +332,22 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
-            if i == len(self.h) - 4 and side_info is not None:
-                hidden_states += side_info[:, tf.newaxis, :]
+            apply_side_info = i == len(self.h) - 6 and side_info is not None
+
+            if apply_side_info:
+                if self.side_info_method == 'bias':
+                    hidden_states += side_info[:, tf.newaxis, :]
+                elif self.side_info_method == 'token':
+                    hidden_states = tf.concat((side_info[:, tf.newaxis, :], hidden_states), axis=1)
+
             outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
+
             hidden_states, present = outputs[:3]
+            if apply_side_info and self.side_info_method == 'token':
+                hidden_states = hidden_states[:, 1:, :]
+                present = present[:, :, :, 1:, :]
+
             presents = presents + (present,)
 
 
@@ -512,9 +524,9 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel):
         logits = outputs[0]
 
     """
-    def __init__(self, config, *inputs, use_side_info=False, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', **kwargs):
         super(TFGPT2LMHeadModel, self).__init__(config, *inputs, **kwargs)
-        self.transformer = TFGPT2MainLayer(config, use_side_info=use_side_info, name='transformer')
+        self.transformer = TFGPT2MainLayer(config, use_side_info=use_side_info, side_info_method=side_info_method, name='transformer')
 
     def get_output_embeddings(self):
         return self.transformer.wte
