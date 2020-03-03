@@ -28,6 +28,8 @@ from io import open
 import numpy as np
 import tensorflow as tf
 
+from checkpointing import checkpointable
+
 from .modeling_tf_utils import (TFPreTrainedModel, TFConv1D, TFSharedEmbeddings,
                                 TFSequenceSummary, shape_list, get_initializer)
 from .configuration_gpt2 import GPT2Config
@@ -221,6 +223,8 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                           config,
                           scale=True,
                           name='h_._{}'.format(i)) for i in range(config.n_layer)]
+        self.checkpoint_h = [checkpointable(block) for block in self.h]
+
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_f')
 
     def get_input_embeddings(self):
@@ -329,7 +333,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         presents = ()
         all_attentions = []
         all_hidden_states = ()
-        for i, (block, layer_past) in enumerate(zip(self.h, past)):
+        for i, (block, cp_block, layer_past) in enumerate(zip(self.h, self.checkpoint_h, past)):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
@@ -341,7 +345,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                 elif self.side_info_method == 'token':
                     hidden_states = tf.concat((side_info[:, tf.newaxis, :], hidden_states), axis=1)
 
-            outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
+            outputs = cp_block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training, _checkpoint=True, _watch_vars=block.trainable_variables)
 
 
             hidden_states, present = outputs[:3]
