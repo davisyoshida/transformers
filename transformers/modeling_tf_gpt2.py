@@ -341,10 +341,12 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
-            apply_side_info = i == self.side_info_layer and side_info is not None
+            apply_side_info = (i == self.side_info_layer or self.side_info_method == 'token_all') and side_info is not None
 
             if apply_side_info:
-                if self.side_info_method == 'bias':
+                if self.side_info_method == 'token_all':
+                    hidden_states = tf.concat((side_info[i][:, tf.newaxis, :], hidden_states), axis=1)
+                elif self.side_info_method == 'bias':
                     hidden_states += side_info[:, tf.newaxis, :]
                 elif self.side_info_method == 'token':
                     hidden_states = tf.concat((side_info[:, tf.newaxis, :], hidden_states), axis=1)
@@ -356,12 +358,11 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                 outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
             hidden_states, present = outputs[:3]
-            if apply_side_info and self.side_info_method == 'token':
+            if apply_side_info and self.side_info_method in ('token_all', 'token'):
                 hidden_states = hidden_states[:, 1:, :]
                 present = present[:, :, :, 1:, :]
 
             presents = presents + (present,)
-
 
             if self.output_attentions:
                 all_attentions.append(outputs[2])
