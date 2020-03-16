@@ -198,7 +198,7 @@ class TFBlock(tf.keras.layers.Layer):
 
 
 class TFGPT2MainLayer(tf.keras.layers.Layer):
-    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', side_info_layer=5, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, grad_checkpoint=False, side_info_method='bias', side_info_layer=5, **kwargs):
         super(TFGPT2MainLayer, self).__init__(config, *inputs, **kwargs)
         self.output_hidden_states = config.output_hidden_states
         self.output_attentions = config.output_attentions
@@ -223,7 +223,10 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                           config,
                           scale=True,
                           name='h_._{}'.format(i)) for i in range(config.n_layer)]
-        self.checkpoint_h = [checkpointable(block) for block in self.h]
+
+        self.grad_checkpoint = grad_checkpoint
+        if self.grad_checkpoint:
+            self.checkpoint_h = [checkpointable(block) for block in self.h]
 
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_f')
 
@@ -333,7 +336,8 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         presents = ()
         all_attentions = []
         all_hidden_states = ()
-        for i, (block, cp_block, layer_past) in enumerate(zip(self.h, self.checkpoint_h, past)):
+
+        for i, (block, layer_past) in enumerate(zip(self.h, past)):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
@@ -345,8 +349,11 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                 elif self.side_info_method == 'token':
                     hidden_states = tf.concat((side_info[:, tf.newaxis, :], hidden_states), axis=1)
 
-            outputs = cp_block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training, _checkpoint=True, _watch_vars=block.trainable_variables)
-
+            if self.grad_checkpoint:
+                cp_block = self.checkpoint_h[i]
+                outputs = cp_block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training, _checkpoint=True, _watch_vars=block.trainable_variables, _force_seed=True)
+            else:
+                outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
             hidden_states, present = outputs[:3]
             if apply_side_info and self.side_info_method == 'token':
@@ -529,13 +536,14 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel):
         logits = outputs[0]
 
     """
-    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', side_info_layer=5, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', side_info_layer=5, grad_checkpoint=False, **kwargs):
         super(TFGPT2LMHeadModel, self).__init__(config, *inputs, **kwargs)
         self.transformer = TFGPT2MainLayer(
             config,
             use_side_info=use_side_info,
             side_info_method=side_info_method,
             side_info_layer=side_info_layer,
+            grad_checkpoint=grad_checkpoint,
             name='transformer'
         )
 
