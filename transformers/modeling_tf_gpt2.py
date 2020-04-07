@@ -242,7 +242,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         """
         raise NotImplementedError
 
-    def call(self, inputs, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, inputs_embeds=None, training=False):
+    def call(self, inputs, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, inputs_embeds=None, training=False, _do_checkpoint=False):
         side_info = None
         if self.use_side_info and isinstance(inputs, dict):
             side_info = inputs['side_info']
@@ -353,7 +353,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
 
             if self.grad_checkpoint:
                 cp_block = self.checkpoint_h[i]
-                outputs = cp_block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training, _checkpoint=True, _watch_vars=block.trainable_variables, _force_seed=True)
+                outputs = cp_block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training, _checkpoint=_do_checkpoint, _watch_vars=block.trainable_variables, _force_seed=True)
             else:
                 outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
