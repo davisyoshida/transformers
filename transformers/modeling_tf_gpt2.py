@@ -349,7 +349,7 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                 elif self.side_info_method == 'bias':
                     hidden_states += side_info[:, tf.newaxis, :]
                 elif self.side_info_method == 'token':
-                    hidden_states = tf.concat((side_info[:, tf.newaxis, :], hidden_states), axis=1)
+                    hidden_states = tf.concat((side_info, hidden_states), axis=1)
 
             if self.grad_checkpoint:
                 cp_block = self.checkpoint_h[i]
@@ -360,8 +360,8 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
 
             hidden_states, present = outputs[:3]
             if apply_side_info and self.side_info_method in ('token_all', 'token'):
-                hidden_states = hidden_states[:, 1:, :]
-                present = present[:, :, :, 1:, :]
+                hidden_states = hidden_states[:, side_info.shape[1]:, :]
+                present = present[:, :, :, side_info.shape[1]:, :]
 
             presents = presents + (present,)
 
