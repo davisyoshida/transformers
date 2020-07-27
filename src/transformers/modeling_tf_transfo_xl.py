@@ -515,10 +515,12 @@ class TFTransfoXLMainLayer(tf.keras.layers.Layer):
         end_idx = mlen + max(0, qlen - 0 - self.ext_len)
         beg_idx = max(0, end_idx - self.mem_len)
         for i in range(len(hids)):
-
+            """
             cat = tf.concat([mems[i], hids[i]], axis=0)
             tf.stop_gradient(cat)
             new_mems.append(cat[beg_idx:end_idx])
+            """
+            new_mems.append((mems[i][beg_idx:], hids[i]))
 
         return new_mems
 
@@ -531,6 +533,7 @@ class TFTransfoXLMainLayer(tf.keras.layers.Layer):
         output_attentions=None,
         output_hidden_states=None,
         training=False,
+        tape=None
     ):
         if isinstance(inputs, (tuple, list)):
             input_ids = inputs[0]
@@ -621,8 +624,12 @@ class TFTransfoXLMainLayer(tf.keras.layers.Layer):
             core_out = self.drop(word_emb, training=training)
             pos_emb = self.drop(pos_emb, training=training)
 
+            watched = 0
             for i, layer in enumerate(self.layers):
                 hids.append(core_out)
+                if tape:
+                    tape.watch(core_out)
+                    watched += 1
                 mems_i = None if mems is None else mems[i]
                 layer_outputs = layer(
                     [core_out, pos_emb, dec_attn_mask, mems_i, head_mask[i], output_attentions], training=training,
@@ -813,6 +820,7 @@ class TFTransfoXLLMHeadModel(TFTransfoXLPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         training=False,
+        **kwargs
     ):
         r"""
     Return:
@@ -860,7 +868,8 @@ class TFTransfoXLLMHeadModel(TFTransfoXLPreTrainedModel):
             bsz, tgt_len = shape_list(inputs_embeds)[:2]
 
         transformer_outputs = self.transformer(
-            [input_ids, mems, head_mask, inputs_embeds, output_attentions, output_hidden_states], training=training
+            [input_ids, mems, head_mask, inputs_embeds, output_attentions, output_hidden_states], training=training,
+            **kwargs
         )
 
         last_hidden = transformer_outputs[0]

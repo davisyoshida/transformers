@@ -152,7 +152,7 @@ class TFAttention(tf.keras.layers.Layer):
 
         # to cope with keras serialization
         if cast_bool_to_primitive(use_cache, True) is True:
-            present = tf.stack([key, value], axis=0)
+            present = [key, value]
         else:
             present = (None,)
 
@@ -365,6 +365,8 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
             if cast_bool_to_primitive(output_hidden_states) is True:
                 all_hidden_states = all_hidden_states + (tf.reshape(hidden_states, output_shape),)
 
+            if layer_past is not None:
+                layer_past = tf.stack(layer_past, axis=0)
             outputs = block(
                 [hidden_states, layer_past, attention_mask, head_mask[i], use_cache, output_attentions],
                 training=training,
