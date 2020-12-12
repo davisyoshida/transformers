@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 TF_GPT2_PRETRAINED_MODEL_ARCHIVE_MAP = {"gpt2": "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-tf_model.h5",
                                      "gpt2-medium": "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-medium-tf_model.h5",
                                      "gpt2-large": "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-large-tf_model.h5",
+                                     "gpt2-xl": "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-xl-tf_model.h5",
                                      "distilgpt2": "https://s3.amazonaws.com/models.huggingface.co/bert/distilgpt2-tf_model.h5",}
 
 
@@ -163,23 +164,31 @@ class TFMLP(tf.keras.layers.Layer):
         self.c_fc = TFConv1D(n_state, nx, initializer_range=config.initializer_range, name='c_fc')
         self.c_proj = TFConv1D(nx, n_state, initializer_range=config.initializer_range, name='c_proj')
         self.act = gelu
+
+        @checkpointable
+        def checkpoint_call(x):
+            h = self.act(self.c_fc(x))
+            h2 = self.c_proj(h)
+            return h2
+
+        self.checkpoint_call = checkpoint_call
         self.dropout = tf.keras.layers.Dropout(config.resid_pdrop)
 
     def call(self, x, training=False):
-        h = self.act(self.c_fc(x))
-        h2 = self.c_proj(h)
+        h2 = self.checkpoint_call(x, _checkpoint=training, _watch_vars=self.trainable_variables)
         h2 = self.dropout(h2, training=training)
         return h2
 
 
 class TFBlock(tf.keras.layers.Layer):
-    def __init__(self, n_ctx, config, scale=False, **kwargs):
+    def __init__(self, n_ctx, config, scale=False, output_present=True, **kwargs):
         super(TFBlock, self).__init__(**kwargs)
         nx = config.n_embd
         self.ln_1 = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_1')
         self.attn = TFAttention(nx, n_ctx, config, scale, name='attn')
         self.ln_2 = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_2')
         self.mlp = TFMLP(4 * nx, config, name='mlp')
+        self.output_present = output_present
 
     def call(self, inputs, training=False):
         x, layer_past, attention_mask, head_mask = inputs
@@ -193,12 +202,14 @@ class TFBlock(tf.keras.layers.Layer):
         m = self.mlp(m, training=training)
         x = x + m
 
-        outputs = [x] + output_attn[1:]
+        outputs = [x]
+        if self.output_present:
+            outputs += output_attn[1:]
         return outputs  # x, present, (attentions)
 
 
 class TFGPT2MainLayer(tf.keras.layers.Layer):
-    def __init__(self, config, *inputs, use_side_info=False, grad_checkpoint=False, side_info_method='bias', side_info_layer=5, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, grad_checkpoint=False, side_info_method='bias', side_info_layer=5, output_present=True, **kwargs):
         super(TFGPT2MainLayer, self).__init__(config, *inputs, **kwargs)
         self.output_hidden_states = config.output_hidden_states
         self.output_attentions = config.output_attentions
@@ -222,13 +233,17 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         self.h = [TFBlock(config.n_ctx,
                           config,
                           scale=True,
-                          name='h_._{}'.format(i)) for i in range(config.n_layer)]
+                          name='h_._{}'.format(i),
+                          output_present=output_present)
+                  for i in range(config.n_layer)]
 
         self.grad_checkpoint = grad_checkpoint
         if self.grad_checkpoint:
             self.checkpoint_h = [checkpointable(block) for block in self.h]
 
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=config.layer_norm_epsilon, name='ln_f')
+
+        self.output_present = output_present
 
     def get_input_embeddings(self):
         return self.wte
@@ -358,7 +373,11 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
             else:
                 outputs = block([hidden_states, layer_past, attention_mask, head_mask[i]], training=training)
 
-            hidden_states, present = outputs[:3]
+            if self.output_present:
+                hidden_states, present = outputs[:3]
+            else:
+                hidden_states, = outputs
+
             if apply_side_info:
                 if self.side_info_method == 'token_all':
                     hidden_states = hidden_states[:, 1:, :]
@@ -367,7 +386,8 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
                     hidden_states = hidden_states[:, side_info.shape[1]:, :]
                     present = present[:, :, :, side_info.shape[1]:, :]
 
-            presents = presents + (present,)
+            if self.output_present:
+                presents = presents + (present,)
 
             if self.output_attentions:
                 all_attentions.append(outputs[2])
@@ -379,7 +399,10 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         if self.output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        outputs = (hidden_states, presents)
+        outputs = (hidden_states,)
+        if self.output_present:
+            outputs += (presents,)
+
         if self.output_hidden_states:
             outputs = outputs + (all_hidden_states,)
         if self.output_attentions:
@@ -542,7 +565,7 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel):
         logits = outputs[0]
 
     """
-    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', side_info_layer=5, grad_checkpoint=False, **kwargs):
+    def __init__(self, config, *inputs, use_side_info=False, side_info_method='bias', side_info_layer=5, grad_checkpoint=False, output_present=True, **kwargs):
         super(TFGPT2LMHeadModel, self).__init__(config, *inputs, **kwargs)
         self.transformer = TFGPT2MainLayer(
             config,
@@ -550,6 +573,7 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel):
             side_info_method=side_info_method,
             side_info_layer=side_info_layer,
             grad_checkpoint=grad_checkpoint,
+            output_present=output_present,
             name='transformer'
         )
 

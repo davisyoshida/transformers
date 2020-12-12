@@ -204,9 +204,9 @@ class TFRobertaModel(TFRobertaPreTrainedModel):
         last_hidden_states = outputs[0]  # The last hidden-state is the first element of the output tuple
 
     """
-    def __init__(self, config, *inputs, **kwargs):
+    def __init__(self, config, use_side_info=False, *inputs, **kwargs):
         super(TFRobertaModel, self).__init__(config, *inputs, **kwargs)
-        self.roberta = TFRobertaMainLayer(config, name='roberta')
+        self.roberta = TFRobertaMainLayer(config, use_side_info=use_side_info, name='roberta')
 
     def call(self, inputs, **kwargs):
         outputs = self.roberta(inputs, **kwargs)

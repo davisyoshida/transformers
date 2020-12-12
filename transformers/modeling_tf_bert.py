@@ -148,7 +148,7 @@ class TFBertEmbeddings(tf.keras.layers.Layer):
             input_shape = shape_list(input_ids)
         else:
             input_shape = shape_list(inputs_embeds)[:-1]
-        
+
         seq_length = input_shape[1]
         if position_ids is None:
             position_ids = tf.range(seq_length, dtype=tf.int32)[tf.newaxis, :]
@@ -332,12 +332,19 @@ class TFBertLayer(tf.keras.layers.Layer):
         self.bert_output = TFBertOutput(config, name='output')
 
     def call(self, inputs, training=False):
-        hidden_states, attention_mask, head_mask = inputs
+        hidden_states, attention_mask, head_mask, side_info = inputs
+
+        if side_info is not None:
+            breakpoint()
+            hidden_states = tf.concat((side_info[:, tf.newaxis], hidden_states), axis=1)
+            attention_mask = tf.concat((tf.ones(tf.shape(attention_mask)[0], 1, 1, 1, dtype=tf.bool), attention_mask), axis=3)
 
         attention_outputs = self.attention([hidden_states, attention_mask, head_mask], training=training)
         attention_output = attention_outputs[0]
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.bert_output([intermediate_output, attention_output], training=training)
+        if side_info is not None:
+            breakpoint()
         outputs = (layer_output,) + attention_outputs[1:]  # add attentions if we output them
         return outputs
 
@@ -350,7 +357,7 @@ class TFBertEncoder(tf.keras.layers.Layer):
         self.layer = [TFBertLayer(config, name='layer_._{}'.format(i)) for i in range(config.num_hidden_layers)]
 
     def call(self, inputs, training=False):
-        hidden_states, attention_mask, head_mask = inputs
+        hidden_states, attention_mask, head_mask, side_info = inputs
 
         all_hidden_states = ()
         all_attentions = ()
@@ -358,7 +365,7 @@ class TFBertEncoder(tf.keras.layers.Layer):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-            layer_outputs = layer_module([hidden_states, attention_mask, head_mask[i]], training=training)
+            layer_outputs = layer_module([hidden_states, attention_mask, head_mask[i], side_info if i == 2 else None], training=training)
             hidden_states = layer_outputs[0]
 
             if self.output_attentions:
@@ -458,13 +465,15 @@ class TFBertNSPHead(tf.keras.layers.Layer):
 
 
 class TFBertMainLayer(tf.keras.layers.Layer):
-    def __init__(self, config, **kwargs):
+    def __init__(self, config, use_side_info=False, **kwargs):
         super(TFBertMainLayer, self).__init__(**kwargs)
         self.num_hidden_layers = config.num_hidden_layers
 
         self.embeddings = TFBertEmbeddings(config, name='embeddings')
         self.encoder = TFBertEncoder(config, name='encoder')
         self.pooler = TFBertPooler(config, name='pooler')
+
+        self.use_side_info = use_side_info
 
     def get_input_embeddings(self):
         return self.embeddings
@@ -480,6 +489,11 @@ class TFBertMainLayer(tf.keras.layers.Layer):
         raise NotImplementedError
 
     def call(self, inputs, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None, inputs_embeds=None, training=False):
+        side_info=None
+        if self.use_side_info and isinstance(inputs, dict):
+            side_info = inputs['side_info']
+            inputs = inputs['orig_inputs']
+
         if isinstance(inputs, (tuple, list)):
             input_ids = inputs[0]
             attention_mask = inputs[1] if len(inputs) > 1 else attention_mask
@@ -541,7 +555,7 @@ class TFBertMainLayer(tf.keras.layers.Layer):
             # head_mask = tf.constant([0] * self.num_hidden_layers)
 
         embedding_output = self.embeddings([input_ids, position_ids, token_type_ids, inputs_embeds], training=training)
-        encoder_outputs = self.encoder([embedding_output, extended_attention_mask, head_mask], training=training)
+        encoder_outputs = self.encoder([embedding_output, extended_attention_mask, head_mask, side_info], training=training)
 
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output)
